@@ -1,0 +1,10 @@
+.venv/
+data/
+frontend/node_modules/
+__pycache__/
+.pytest_cache/
+roundtable/local_keys.py
+data.old-demos/
+.env
+*.env
+node_modules/
