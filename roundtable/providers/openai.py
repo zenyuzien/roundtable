@@ -9,14 +9,31 @@ from .base import LLMResponse, Provider, ProviderError, RETRYABLE_STATUS, ToolCa
 
 
 class OpenAIProvider(Provider):
-    """Chat Completions API. ``OPENAI_BASE_URL`` may point at any compatible server."""
+    """Chat Completions API. ``OPENAI_BASE_URL`` may point at any compatible server.
+
+    Subclasses for other OpenAI-compatible APIs override the class attributes below.
+    """
 
     name = "openai"
+    label = "OpenAI"
+    base_url_env = "OPENAI_BASE_URL"
+    default_base_url = "https://api.openai.com/v1"
+    max_tokens_param = "max_completion_tokens"
 
     def __init__(self, get_key, client: httpx.AsyncClient | None = None):
         self._get_key = get_key
         self._client = client or httpx.AsyncClient(timeout=httpx.Timeout(600.0, connect=20.0))
-        self.base_url = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1").rstrip("/")
+        self.base_url = os.environ.get(self.base_url_env, self.default_base_url).rstrip("/")
+
+    def _max_tokens(self, model: str, max_tokens: int) -> int:
+        return max_tokens
+
+    def _raw_message(self, msg: dict) -> dict:
+        """The assistant message as it must be sent back to continue a tool-use loop."""
+        raw = {"role": "assistant", "content": msg.get("content")}
+        if msg.get("tool_calls"):
+            raw["tool_calls"] = msg["tool_calls"]
+        return raw
 
     def _convert(self, system: str, messages: list[dict]) -> list[dict]:
         out: list[dict] = [{"role": "system", "content": system}]
@@ -45,11 +62,11 @@ class OpenAIProvider(Provider):
                        tool_choice_none=False) -> LLMResponse:
         key = self._get_key()
         if not key:
-            raise ProviderError("OpenAI API key is not configured", retryable=False)
+            raise ProviderError(f"{self.label} API key is not configured", retryable=False)
         body: dict = {
             "model": model,
             "messages": self._convert(system, messages),
-            "max_completion_tokens": max_tokens,
+            self.max_tokens_param: self._max_tokens(model, max_tokens),
         }
         if temperature is not None:
             body["temperature"] = temperature
@@ -65,14 +82,14 @@ class OpenAIProvider(Provider):
         try:
             r = await self._client.post(f"{self.base_url}/chat/completions", json=body, headers=headers)
         except httpx.HTTPError as e:
-            raise ProviderError(f"OpenAI network error: {type(e).__name__}: {e}", retryable=True) from None
+            raise ProviderError(f"{self.label} network error: {type(e).__name__}: {e}", retryable=True) from None
         if r.status_code != 200:
             try:
                 detail = r.json().get("error", {}).get("message", r.text[:500])
             except ValueError:
                 detail = r.text[:500]
             raise ProviderError(
-                f"OpenAI HTTP {r.status_code}: {detail}",
+                f"{self.label} HTTP {r.status_code}: {detail}",
                 retryable=r.status_code in RETRYABLE_STATUS,
                 status=r.status_code,
                 retry_after=parse_retry_after(r.headers),
@@ -91,9 +108,7 @@ class OpenAIProvider(Provider):
                 args = {"_unparsed_arguments": fn.get("arguments")}
             calls.append(ToolCall(id=tc["id"], name=fn.get("name", ""), args=args))
         usage = data.get("usage") or {}
-        raw_msg = {"role": "assistant", "content": msg.get("content")}
-        if msg.get("tool_calls"):
-            raw_msg["tool_calls"] = msg["tool_calls"]
+        raw_msg = self._raw_message(msg)
         return LLMResponse(
             text=msg.get("content") or "",
             tool_calls=calls,

@@ -21,6 +21,7 @@ Roundtable talks to an AI model through an API key. Pick **one** provider:
 | Google AI Studio (Gemini) | https://aistudio.google.com/apikey | Free tier available (small daily limits) |
 | Anthropic (Claude) | https://console.anthropic.com/settings/keys | Paid |
 | OpenAI | https://platform.openai.com/api-keys | Paid |
+| DeepSeek | https://platform.deepseek.com/api_keys | Paid (low prices) |
 
 One key is enough for all agents.
 
@@ -37,6 +38,7 @@ page asks for one. Paste it there and press **Save key**.
 export GEMINI_API_KEY="your-key-here"       # Google AI Studio
 export ANTHROPIC_API_KEY="your-key-here"    # Anthropic
 export OPENAI_API_KEY="your-key-here"       # OpenAI
+export DEEPSEEK_API_KEY="your-key-here"     # DeepSeek
 ```
 
 This lasts only for that terminal window.
@@ -103,7 +105,7 @@ To stop the app, press **Ctrl+C** in the terminal. To start it again later, run 
 
 - `./run.sh --port 8766` starts on another port. The app only listens on your own computer (127.0.0.1).
 - All runs are saved in `data/`. Set `ROUNDTABLE_DATA=/some/folder` to keep them somewhere else.
-- `OPENAI_BASE_URL` and `GEMINI_BASE_URL` point the app at a different compatible server (for example a local model).
+- `OPENAI_BASE_URL`, `GEMINI_BASE_URL` and `DEEPSEEK_BASE_URL` point the app at a different compatible server (for example a local model).
 - Without `run.sh`:
 
   ```bash
@@ -275,6 +277,7 @@ versions are kept as `<file>.conflict-r<t>-<agent>` and the conflict is logged.
 * summaries, and upload delivery.
 
 `tests/test_api.py` drives the HTTP API end to end and checks that keys never leak.
+`tests/test_deepseek_provider.py` does the same for DeepSeek.
 `tests/test_google_provider.py` runs the Gemini provider against a fake endpoint (request format, tool loop,
 thought signatures, token accounting, retries, blocked prompts, key sources).
 
@@ -283,6 +286,7 @@ Real-provider smoke test (two agents, two rounds, a few cents):
 ```bash
 RT_LIVE_TEST=1 RT_LIVE_PROVIDER=anthropic RT_LIVE_MODEL=claude-haiku-5-5 .venv/bin/python -m pytest tests/test_live_provider.py
 RT_LIVE_TEST=1 RT_LIVE_PROVIDER=google GEMINI_API_KEY=... .venv/bin/python -m pytest tests/test_live_provider.py
+RT_LIVE_TEST=1 RT_LIVE_PROVIDER=deepseek DEEPSEEK_API_KEY=... .venv/bin/python -m pytest tests/test_live_provider.py
 ```
 
 ## Layout

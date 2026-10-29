@@ -140,7 +140,7 @@ export default function Settings({ state, meta, pid, act, notify, onDeleted, rel
   )
 }
 
-const KEY_LABELS = { anthropic: 'Anthropic', openai: 'OpenAI', google: 'Google AI Studio (Gemini)' }
+const KEY_LABELS = { anthropic: 'Anthropic', openai: 'OpenAI', google: 'Google AI Studio (Gemini)', deepseek: 'DeepSeek' }
 
 function Keys({ meta, notify, reloadMeta }) {
   const [vals, setVals] = useState({ openai: '', anthropic: '', google: '' })
@@ -153,7 +153,7 @@ function Keys({ meta, notify, reloadMeta }) {
     <section className="card">
       <h4>API keys</h4>
       <p className="muted small">One key per provider serves all agents. Stored locally in <code>data/secrets.json</code> (mode 600) or read from
-        <code> OPENAI_API_KEY</code> / <code>ANTHROPIC_API_KEY</code> / <code>GEMINI_API_KEY</code> (or <code>GOOGLE_API_KEY</code>). Keys are never sent back to the browser, logged, or exposed to agent tools.</p>
+        <code> OPENAI_API_KEY</code> / <code>ANTHROPIC_API_KEY</code> / <code>GEMINI_API_KEY</code> (or <code>GOOGLE_API_KEY</code>) / <code>DEEPSEEK_API_KEY</code>. Keys are never sent back to the browser, logged, or exposed to agent tools.</p>
       {Object.entries(KEY_LABELS).map(([p, label]) => (
         <div key={p} className="form-row key-row">
           <label>{label} key

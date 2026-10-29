@@ -16,7 +16,7 @@ from roundtable.providers import build_providers
 
 PROVIDER = os.environ.get("RT_LIVE_PROVIDER", "anthropic")
 MODEL = os.environ.get("RT_LIVE_MODEL", {"anthropic": "claude-haiku-5-5", "openai": "gpt-4o-mini",
-                                         "google": "gemini-2.5-flash"}.get(PROVIDER, ""))
+                                         "google": "gemini-3.5-flash-lite", "deepseek": "deepseek-chat"}.get(PROVIDER, ""))
 
 
 @pytest.mark.skipif(os.environ.get("RT_LIVE_TEST") != "1", reason="set RT_LIVE_TEST=1 to run against a real API")

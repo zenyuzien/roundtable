@@ -18,6 +18,7 @@ from .tools.sandbox import Sandbox
 from .workspace import WS_KINDS, ProjectPaths, list_tree, safe_join, snapshot_entries, staged_changes
 
 DEFAULT_MODELS = {"google": "gemini-3.5-flash-lite", "anthropic": "claude-haiku-5-5", "openai": "gpt-5-mini",
+                  "deepseek": "deepseek-chat",
                   "mock": "mock"}
 DEFAULT_MODEL = DEFAULT_MODELS["google"]
 MAX_UPLOAD = 100 * 1024 * 1024

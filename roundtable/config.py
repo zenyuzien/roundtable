@@ -99,7 +99,7 @@ def normalize_settings(s: dict) -> dict:
 # ---------------------------------------------------------------- secrets
 
 PROVIDER_ENV = {"openai": ("OPENAI_API_KEY",), "anthropic": ("ANTHROPIC_API_KEY",),
-                "google": ("GEMINI_API_KEY", "GOOGLE_API_KEY")}
+                "google": ("GEMINI_API_KEY", "GOOGLE_API_KEY"), "deepseek": ("DEEPSEEK_API_KEY",)}
 
 
 try:

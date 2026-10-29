@@ -8,4 +8,5 @@ BUILTIN_KEYS = {
     # "google": "AIza...",     # Google AI Studio key: https://aistudio.google.com/apikey
     # "anthropic": "sk-ant-...",
     # "openai": "sk-...",
+    # "deepseek": "sk-...",      # https://platform.deepseek.com/api_keys
 }

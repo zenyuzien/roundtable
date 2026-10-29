@@ -2,7 +2,7 @@ import React, { useState } from 'react'
 import { api, agentColor } from '../api.js'
 
 const DEFAULT_TOOLS = ['workspace', 'files', 'transcript', 'web_search', 'fetch_url', 'arxiv', 'python']
-const LABEL = { google: 'Google AI Studio (Gemini)', anthropic: 'Anthropic (Claude)', openai: 'OpenAI' }
+const LABEL = { google: 'Google AI Studio (Gemini)', anthropic: 'Anthropic (Claude)', openai: 'OpenAI', deepseek: 'DeepSeek' }
 
 // Optional preset, fully editable: a neutral judge that never argues, tracks cruxes and concessions,
 // decides when further rounds stop adding anything, and writes the final synthesis.

@@ -1,5 +1,6 @@
 from .base import LLMResponse, Provider, ProviderError, ToolCall, ToolSpec, with_retries  # noqa: F401
 from .anthropic import AnthropicProvider
+from .deepseek import DeepSeekProvider
 from .google import GoogleProvider
 from .mock import MockProvider
 from .openai import OpenAIProvider
@@ -11,6 +12,7 @@ PROVIDER_INFO = {
     "google": {"label": "Google AI Studio (Gemini)",
                "suggested_models": ["gemini-3.5-flash-lite", "gemini-3.6-flash", "gemini-3.1-flash-lite",
                                     "gemini-flash-latest", "gemini-pro-latest"]},
+    "deepseek": {"label": "DeepSeek", "suggested_models": ["deepseek-chat", "deepseek-reasoner"]},
     "mock": {"label": "Mock (offline)", "hidden": True, "suggested_models": ["mock", "mock-slow", "mock-tools", "mock-fail"]},
 }
 
@@ -20,5 +22,6 @@ def build_providers(secrets) -> dict[str, Provider]:
         "anthropic": AnthropicProvider(lambda: secrets.get("anthropic")),
         "openai": OpenAIProvider(lambda: secrets.get("openai")),
         "google": GoogleProvider(lambda: secrets.get("google")),
+        "deepseek": DeepSeekProvider(lambda: secrets.get("deepseek")),
         "mock": MockProvider(),
     }
