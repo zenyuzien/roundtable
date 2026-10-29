@@ -10,51 +10,106 @@ the instructions you write for it.
 
 ## Quick start
 
+You need **Python 3.10 or newer**. Node.js is not needed (the web page comes pre-built).
+
+### Step 1: Get an API key
+
+Roundtable talks to an AI model through an API key. Pick **one** provider:
+
+| Provider | Where to get a key | Cost |
+|---|---|---|
+| Google AI Studio (Gemini) | https://aistudio.google.com/apikey | Free tier available (small daily limits) |
+| Anthropic (Claude) | https://console.anthropic.com/settings/keys | Paid |
+| OpenAI | https://platform.openai.com/api-keys | Paid |
+
+One key is enough for all agents.
+
+### Step 2: Give the key to Roundtable
+
+Choose **one** of these three ways. They all work the same.
+
+**Way A: paste it in the app (easiest).** Skip this step for now. When you open the app and no key is found, the setup
+page asks for one. Paste it there and press **Save key**.
+
+**Way B: an environment variable.** Run this in the terminal before starting the app (use the line for your provider):
+
 ```bash
-./run.sh                     # creates .venv, installs deps, builds the UI if needed, starts the server
-# open http://127.0.0.1:8765
+export GEMINI_API_KEY="your-key-here"       # Google AI Studio
+export ANTHROPIC_API_KEY="your-key-here"    # Anthropic
+export OPENAI_API_KEY="your-key-here"       # OpenAI
 ```
 
-The app works on a single project and opens in a three-step setup: **1. task**, **2. number of agents and
-model**, **3. one instruction page per agent**. Then **Start round 1**. Before round 1 you can still change
-everything ("Edit setup" in the sidebar). After that, use the channels to intervene, or Settings → **Start over** for a new task.
+This lasts only for that terminal window.
 
-The model dropdown in setup lists the models your Google AI Studio key can use. On the free tier each model has its own small daily request quota (for example 20/day). If one model
-reports "daily free-tier quota exhausted", switch the agents to another model or enable billing.
-
-Requirements: Python ≥ 3.10. Node ≥ 18 is needed only if `frontend/dist` is missing (it ships prebuilt).
-
-Manual equivalent:
+**Way C: a key file (stays after restarts).**
 
 ```bash
-python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
-(cd frontend && npm install && npm run build)       # only if frontend/dist is missing
-.venv/bin/python -m roundtable --port 8765           # binds to 127.0.0.1 by default
+cp roundtable/local_keys.example.py roundtable/local_keys.py
 ```
 
-API keys: enter them in **Settings → API keys**, or set `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` /
-`GEMINI_API_KEY` (or `GOOGLE_API_KEY`, for a Google AI Studio key from https://aistudio.google.com/apikey) before starting.
-One key per provider serves every agent that uses that provider. Keys are stored in `data/secrets.json` with mode 0600.
-They are never returned to the browser, written to logs, or passed to agent tool processes, and they are
-redacted from stored error messages. `OPENAI_BASE_URL` can point the OpenAI provider at any compatible server
-(for example vLLM or Ollama); `GEMINI_BASE_URL` does the same for the Gemini endpoint.
+Open `roundtable/local_keys.py` in a text editor and fill in your key, for example:
 
-All state lives in `data/` (SQLite database `data/roundtable.sqlite3` plus per-project file trees). Set
-`ROUNDTABLE_DATA=/some/dir` to put it elsewhere.
+```python
+BUILTIN_KEYS = {
+    "google": "your-key-here",
+}
+```
 
-## API keys (never commit them)
+If you use more than one way, the app uses the key saved in the app first, then the environment variable, then the
+key file.
 
-Keys are looked up in this order; the first one found wins:
+### Step 3: Start the app
 
-1. **Settings → API keys** in the GUI, stored in `data/secrets.json` (mode 0600; `data/` is git-ignored).
-2. **Environment variables**: `GEMINI_API_KEY` (or `GOOGLE_API_KEY`), `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`.
-3. **A local key file**: `cp roundtable/local_keys.example.py roundtable/local_keys.py`, then put your key in it.
-   `local_keys.py` is git-ignored, so the repository only ever contains the empty template.
+```bash
+cd roundtable          # the folder you cloned
+./run.sh
+```
 
-Keys are never sent to the browser, logged, or passed to agent tool processes, and they are redacted from stored
-errors. Before pushing, `git status` should never list `roundtable/local_keys.py`, `data/` or a `.env` file. If a key
-is ever committed or shared, revoke it in Google AI Studio (or the provider's console) and create a new one. Removing
-it from git history afterwards is not enough.
+The first start takes a minute: it creates a Python environment in `.venv` and installs everything. When you see
+`Roundtable running at http://127.0.0.1:8765`, open that address in your browser.
+
+To stop the app, press **Ctrl+C** in the terminal. To start it again later, run `./run.sh` again.
+
+### Step 4: Use it
+
+1. **Setup page:** write the goal, choose how many agents, write a role for each one, and set the maximum number of
+   rounds. Optionally press **+ Add a neutral judge**. Press **Start**.
+2. **Activity page:** watch the rounds. The **Common ground** tab shows everything all agents see, including the full
+   content of every file they write. Each agent also has its own tab. Anything you type or attach is delivered at the
+   start of the next round.
+3. **Options** (top right) has everything else: models, settings, files, and the event log.
+4. **New run** (top right of Activity) deletes the current run and starts fresh.
+
+### If something goes wrong
+
+| Problem | What to do |
+|---|---|
+| "No API key found" on the setup page | Paste a key there (Way A), or use Way B or C and restart the app. |
+| "daily free-tier quota exhausted" | That model's free daily limit is used up. In **Options → Agents & models**, switch the agent to another model (each model has its own limit), then press **Retry failed agents**. Or wait until the next day. |
+| "Model ... is no longer available" | Pick another model in **Options → Agents & models**. |
+| `address already in use` when starting | The app is already running somewhere. Close it, or start on another port: `./run.sh --port 8766`. |
+| `./run.sh: Permission denied` | Run `chmod +x run.sh` once. |
+
+### Keep your key safe
+
+- **Never put your key in any other file in this folder, and never commit it.** `roundtable/local_keys.py` and the
+  `data/` folder (where keys typed into the app are saved) are already excluded from git.
+- Before you push, run `git status`. It must **not** list `roundtable/local_keys.py`, anything in `data/`, or a `.env` file.
+- If your key ever ends up on GitHub or in a chat, **delete it** at the provider (link in Step 1) and make a new one.
+  Removing it from git afterwards is not enough, because old commits and copies keep it.
+- The app never shows your key in the browser, never writes it to logs, and never gives it to the agents' code.
+
+### Extra options
+
+- `./run.sh --port 8766` starts on another port. The app only listens on your own computer (127.0.0.1).
+- All runs are saved in `data/`. Set `ROUNDTABLE_DATA=/some/folder` to keep them somewhere else.
+- `OPENAI_BASE_URL` and `GEMINI_BASE_URL` point the app at a different compatible server (for example a local model).
+- Without `run.sh`:
+
+  ```bash
+  python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+  .venv/bin/python -m roundtable --port 8765
+  ```
 
 ## The round protocol
 
