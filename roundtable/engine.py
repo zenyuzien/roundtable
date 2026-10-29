@@ -40,7 +40,7 @@ from .db import Store, jdump, jload, now
 from .providers import Provider, ProviderError, with_retries
 from .tools import registry
 from .tools.sandbox import Sandbox
-from .workspace import (ProjectPaths, archive_staging, cleanup_staging, commit_files, commit_proposals, incorporate_user_edits,
+from .workspace import (ProjectPaths, archive_staging, cleanup_staging, commit_files, staged_changes, commit_proposals, incorporate_user_edits,
                         snapshot_entries)
 
 log = logging.getLogger("roundtable.engine")
@@ -297,7 +297,7 @@ class ProjectRunner:
                 run_ids = [r["id"] for r in self.s.q("SELECT id FROM agent_runs WHERE round_id = ? ORDER BY position",
                                                      (round_id,))]
                 await self._execute(run_ids)
-                if not await self._settle(round_id, st):
+                if not await self._complete_round(round_id, st):
                     return
                 await self._maybe_summarize(t, st)
                 if self._post_round(t, single):
@@ -331,17 +331,23 @@ class ProjectRunner:
                 raise EngineError("no enabled agents")
             names = self.agent_names()
             member_ids = [a["id"] for a in agents]
+            reviewers = set(st["review_agents"]) & set(member_ids) if synthesis_agent is None else set()
+            if reviewers and len(reviewers) == len(member_ids):
+                reviewers = set()  # nobody to review: everyone works in phase 1
             round_id = s.ex("INSERT INTO rounds(project_id, number, status, members, started_at, kind) VALUES "
                             "(?,?, 'running', ?, ?, ?)", (self.pid, t, jdump(member_ids), now(),
                                                           "synthesis" if synthesis_agent is not None else "debate"))
             for pos, a in enumerate(agents):
+                if a["id"] in reviewers:
+                    continue  # phase 2: context is built after this round's phase-1 barrier
                 iv = s.one("SELECT * FROM instruction_versions WHERE agent_id = ? ORDER BY version DESC LIMIT 1",
                            (a["id"],))
                 groups = registry.allowed_groups(jload(a["tools"], []), st)
                 if not a["memory_enabled"]:
                     groups.discard("memory")
                 ctx = build_context(s, self.paths, self.pid, t, a, iv["text"] if iv else "", member_ids, names, st,
-                                    groups, synthesis=synthesis_agent is not None, synthesis_reason=synthesis_reason)
+                                    groups, synthesis=synthesis_agent is not None, synthesis_reason=synthesis_reason,
+                                    reviewer_ids=sorted(reviewers))
                 ctx["settings"] = st
                 cfg = {"name": a["name"], "provider": a["provider"], "model": a["model"],
                        "temperature": a["temperature"], "max_tokens": a["max_tokens"],
@@ -446,8 +452,10 @@ class ProjectRunner:
                         out = await registry.execute(tctx, call, groups)
                         results.append({"id": call.id, "name": call.name, "content": out})
                     if it + 1 == max_iter and results:
-                        results[-1]["content"] += ("\n\n[Tool-call limit reached for this round: write your final "
-                                                   "response now without further tool calls.]")
+                        results[-1]["content"] += (
+                            "\n\n[Tool-call limit reached for this round: write your final response now without "
+                            "further tool calls. If a run failed or you have no result yet, say so plainly and state "
+                            "what you will run next round - do not report numbers you did not obtain.]")
                     messages.append({"role": "tool", "results": results})
                     s.ex("UPDATE agent_runs SET transcript = ? WHERE id = ?", (jdump(_clean(messages)), rid))
                     continue
@@ -513,11 +521,11 @@ class ProjectRunner:
         return self.s.q("SELECT * FROM agent_runs WHERE round_id = ? AND superseded = 0 ORDER BY position",
                         (round_id,))
 
-    async def _settle(self, round_id: int, st: dict) -> bool:
-        """Barrier reached. Returns True iff the round was completed."""
+    async def _settle(self, round_id: int, st: dict, finalize: bool = True) -> bool:
+        """Barrier reached. Returns True iff every run is resolved (and, with finalize, the round committed)."""
         rnd = self.s.one("SELECT * FROM rounds WHERE id = ?", (round_id,))
         if self.stop_requested:
-            if all(r["status"] == "succeeded" for r in self._current_runs(round_id)):
+            if all(r["status"] in ("succeeded", "skipped") for r in self._current_runs(round_id)):
                 self._finalize(round_id, skip=[])
                 self.set_state("stopped", f"stopped by user after round {rnd['number']} completed")
             else:
@@ -525,7 +533,10 @@ class ProjectRunner:
                 self.set_state("stopped", f"Stopped during round {rnd['number']}. Completed rounds are preserved; "
                                           "the partial round can be retried or discarded.")
             return False
-        failed = [r for r in self._current_runs(round_id) if r["status"] != "succeeded"]
+        def unresolved():
+            return [r for r in self._current_runs(round_id) if r["status"] not in ("succeeded", "skipped")]
+
+        failed = unresolved()
         if failed and st["failure_policy"] == "retry_then_halt":
             for _ in range(st["auto_retries"]):
                 if not failed or self.stop_requested:
@@ -533,12 +544,14 @@ class ProjectRunner:
                 if any("Budget exceeded" in (r["error"] or "") for r in failed):
                     break
                 await self._retry(round_id, failed)
-                failed = [r for r in self._current_runs(round_id) if r["status"] != "succeeded"]
+                failed = unresolved()
             if self.stop_requested:
-                return await self._settle(round_id, st)
+                return await self._settle(round_id, st, finalize)
         if failed:
             if st["failure_policy"] == "skip_failed":
-                self._finalize(round_id, skip=failed)
+                self._mark_skipped(failed)
+                if finalize:
+                    self._finalize(round_id, skip=[])
                 return True
             self.s.ex("UPDATE rounds SET status = 'failed', note = ? WHERE id = ?",
                       (f"{len(failed)} agent(s) failed", round_id))
@@ -548,13 +561,100 @@ class ProjectRunner:
                            + (" because the token/cost budget ran out mid-round. Raise the budget, then retry them"
                               if budget else ". Retry them") + ", continue without them, or discard the round.")
             return False
+        if finalize:
+            self._finalize(round_id, skip=[])
+        return True
+
+    async def _complete_round(self, round_id: int, st: dict) -> bool:
+        """Phase-1 barrier, then (if configured) the review phase, then commit. True iff the round completed."""
+        if not await self._settle(round_id, st, finalize=False):
+            return False
+        if self.stop_requested:
+            self._finalize(round_id, skip=[])
+            self.set_state("stopped", "stopped by user (review phase skipped)")
+            return False
+        new_ids = self._start_review_phase(round_id, st)
+        if new_ids:
+            await self._execute(new_ids)
+            return await self._settle(round_id, st)
         self._finalize(round_id, skip=[])
         return True
+
+    def _start_review_phase(self, round_id: int, st: dict) -> list[int]:
+        """Create phase-2 runs whose frozen context includes this round's phase-1 contributions."""
+        s = self.s
+        rnd = s.one("SELECT * FROM rounds WHERE id = ?", (round_id,))
+        if rnd["kind"] == "synthesis":
+            return []
+        members = jload(rnd["members"])
+        have = {r["agent_id"] for r in self._current_runs(round_id)}
+        reviewers = [m for m in members if m in st["review_agents"] and m not in have]
+        if not reviewers or not have:
+            return []
+        t = rnd["number"]
+        names = self.agent_names()
+        current = []
+        for r in self._current_runs(round_id):
+            if r["status"] != "succeeded":
+                continue
+            out = s.one("SELECT content FROM messages WHERE agent_run_id = ? AND kind = 'agent_output'", (r["id"],))
+            files = []
+            for rel, f, _ in staged_changes(self.paths, t, r["id"], r["agent_id"]):
+                if rel.startswith("private/"):
+                    continue
+                try:
+                    files.append((rel, f.read_text(errors="replace")[:12_000]))
+                except OSError:
+                    pass
+            calls = s.q("SELECT id, tool, args, status, result FROM tool_calls WHERE agent_run_id = ? AND private = 0 "
+                        "ORDER BY id", (r["id"],))
+            current.append({"agent_id": r["agent_id"], "name": names.get(r["agent_id"], "?"),
+                            "content": out["content"] if out else "", "files": files, "tool_calls": calls})
+        ids = []
+        with s.tx():
+            for a in s.q(f"SELECT * FROM agents WHERE id IN ({','.join('?' * len(reviewers))})", reviewers):
+                iv = s.one("SELECT * FROM instruction_versions WHERE agent_id = ? ORDER BY version DESC LIMIT 1",
+                           (a["id"],))
+                groups = registry.allowed_groups(jload(a["tools"], []), st)
+                if not a["memory_enabled"]:
+                    groups.discard("memory")
+                ctx = build_context(s, self.paths, self.pid, t, a, iv["text"] if iv else "", members, names, st,
+                                    groups, current_round=current, reviewer_ids=reviewers)
+                ctx["settings"] = st
+                cfg = {"name": a["name"], "provider": a["provider"], "model": a["model"],
+                       "temperature": a["temperature"], "max_tokens": a["max_tokens"],
+                       "tool_groups": sorted(groups), "max_tool_iterations": st["max_tool_iterations"],
+                       "instruction_version": iv["version"] if iv else None, "phase": 2}
+                ids.append(s.ex(
+                    "INSERT INTO agent_runs(project_id, round_id, round_number, agent_id, position, status, "
+                    "instruction_version_id, agent_config, context) VALUES (?,?,?,?,?, 'pending', ?,?,?)",
+                    (self.pid, round_id, t, a["id"], members.index(a["id"]), iv["id"] if iv else None,
+                     jdump(cfg), jdump(ctx))))
+            s.event(self.pid, "review_phase", round=t, reviewers=reviewers)
+        return ids
+
+    def _mark_skipped(self, runs: list[dict]) -> None:
+        for r in runs:
+            self.s.ex("UPDATE agent_runs SET status = 'skipped', error = COALESCE(error, '') || ' [skipped by "
+                      "failure policy]' WHERE id = ?", (r["id"],))
+            self.s.ex("UPDATE ws_proposals SET status = 'discarded' WHERE agent_run_id = ? AND status = 'staged'",
+                      (r["id"],))
+            self.s.ex("UPDATE memory_versions SET status = 'discarded' WHERE agent_run_id = ? AND status = 'staged'",
+                      (r["id"],))
 
     async def _retry(self, round_id: int, failed: list[dict]) -> None:
         new_ids = []
         with self.s.tx():
             for r in failed:
+                # The context stays frozen; provider/model/max_tokens come from the agent's current settings, so a
+                # retry can switch to another model (e.g. after a daily quota is exhausted).
+                cfg = jload(r["agent_config"])
+                cur = self.s.one("SELECT provider, model, max_tokens FROM agents WHERE id = ?", (r["agent_id"],))
+                if cur and (cur["provider"], cur["model"], cur["max_tokens"]) != (cfg["provider"], cfg["model"],
+                                                                                 cfg["max_tokens"]):
+                    cfg.update(provider=cur["provider"], model=cur["model"], max_tokens=cur["max_tokens"],
+                               retried_with_model_change=True)
+                r = dict(r, agent_config=jdump(cfg))
                 self.s.ex("UPDATE agent_runs SET superseded = 1 WHERE id = ?", (r["id"],))
                 self.s.ex("UPDATE ws_proposals SET status = 'discarded' WHERE agent_run_id = ? AND status = 'staged'",
                           (r["id"],))
@@ -576,13 +676,7 @@ class ProjectRunner:
         t = rnd["number"]
         names = self.agent_names()
         with s.tx():
-            for r in skip:
-                s.ex("UPDATE agent_runs SET status = 'skipped', error = COALESCE(error, '') || ' [skipped by "
-                     "failure policy]' WHERE id = ?", (r["id"],))
-                s.ex("UPDATE ws_proposals SET status = 'discarded' WHERE agent_run_id = ? AND status = 'staged'",
-                     (r["id"],))
-                s.ex("UPDATE memory_versions SET status = 'discarded' WHERE agent_run_id = ? AND status = 'staged'",
-                     (r["id"],))
+            self._mark_skipped(skip)
             ok = [r for r in self._current_runs(round_id) if r["status"] == "succeeded"]
             ids = [r["id"] for r in ok]
             if ids:
@@ -597,10 +691,12 @@ class ProjectRunner:
                  "visible_from_round <= ?", (self.pid, t))
             s.ex("UPDATE files SET status = 'processed' WHERE project_id = ? AND status = 'incorporated' AND "
                  "visible_from_round <= ?", (self.pid, t))
-            note = f"{len(skip)} agent(s) skipped after failure" if skip else None
+            n_skip = sum(1 for r in self._current_runs(round_id) if r["status"] == "skipped")
+            note = f"{n_skip} agent(s) skipped after failure" if n_skip else None
             s.ex("UPDATE rounds SET status = 'completed', finished_at = ?, note = ? WHERE id = ?", (now(), note, round_id))
-            s.event(self.pid, "round_completed", round=t, skipped=[r["agent_id"] for r in skip])
-        archive_staging(self.paths, t, skip)
+            s.event(self.pid, "round_completed", round=t,
+                    skipped=[r["agent_id"] for r in self._current_runs(round_id) if r["status"] == "skipped"])
+        archive_staging(self.paths, t, [r for r in self._current_runs(round_id) if r["status"] == "skipped"])
         cleanup_staging(self.paths, t)
 
     def _post_round(self, t: int, single: bool) -> bool:
@@ -711,22 +807,20 @@ class ProjectRunner:
     async def _recover_round(self, round_id: int, skip: bool) -> None:
         try:
             rnd = self.s.one("SELECT * FROM rounds WHERE id = ?", (round_id,))
-            failed = [r for r in self._current_runs(round_id) if r["status"] != "succeeded"]
+            failed = [r for r in self._current_runs(round_id) if r["status"] not in ("succeeded", "skipped")]
             if skip:
-                self._finalize(round_id, skip=failed)
-            else:
-                if failed:
-                    await self._retry(round_id, failed)
-                still = [r for r in self._current_runs(round_id) if r["status"] != "succeeded"]
-                if self.stop_requested:
-                    await self._settle(round_id, self.settings())
-                    return
-                if still:
+                self._mark_skipped(failed)
+            elif failed:
+                await self._retry(round_id, failed)
+                still = [r for r in self._current_runs(round_id) if r["status"] not in ("succeeded", "skipped")]
+                if still and not self.stop_requested:
                     self.s.ex("UPDATE rounds SET status = 'failed' WHERE id = ?", (round_id,))
                     names = ", ".join(jload(r["agent_config"])["name"] for r in still)
                     self.set_state("needs_attention", f"Round {rnd['number']}: retry failed again for {names}.")
                     return
-                self._finalize(round_id, skip=[])
+            self.s.ex("UPDATE rounds SET status = 'running' WHERE id = ?", (round_id,))
+            if not await self._complete_round(round_id, self.settings()):
+                return
             if not self._post_round(rnd["number"], single=True):
                 self.set_state("paused", f"round {rnd['number']} recovered")
             elif self.synthesis_pending:

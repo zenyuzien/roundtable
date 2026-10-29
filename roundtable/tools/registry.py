@@ -364,18 +364,32 @@ async def _arxiv_read(ctx: ToolContext, a: dict) -> str:
 # ------------------------------------------------------------------ execution
 
 @tool("run_python", "python",
-      "Execute Python code in your working copy of the project files (cwd). numpy/sympy (and torch, if "
-      "installed) are available. Files you create are staged and merged into the shared tree at round end. "
-      "Print what you want to see.",
-      {"code": S, "timeout_s": I}, ["code"])
+      "Execute Python in your working copy of the project files (cwd): pass `code`, or `path` to run a saved "
+      ".py file. numpy/sympy (and torch, if installed) are available. Spawning subprocesses is blocked, so use "
+      "`path` instead of subprocess. Files you create are staged and merged into the shared tree at round end. "
+      "Print what you want to see. Your stdout is recorded and shown to the other agents as evidence: report "
+      "only numbers that your runs actually printed.",
+      {"code": S, "path": S, "timeout_s": I}, [])
 async def _run_python(ctx: ToolContext, a: dict) -> str:
     t = ctx.settings["tools"]
     wd = ctx.ensure_workdir()
+    ran_file = None
+    if not a.get("code") and a.get("path"):
+        p = safe_join(wd, a["path"])
+        if not p.is_file():
+            return f"ERROR: no such file: {a['path']}"
+        a = dict(a, code=p.read_text())
+        ran_file = a["path"]
+    if not a.get("code"):
+        return "ERROR: pass `code` or `path`"
     timeout = min(int(a.get("timeout_s") or t["exec_timeout_s"]), int(t["exec_timeout_s"]))
     exec_id = f"py_{int(asyncio.get_running_loop().time() * 1000)}"
     r = await ctx.sandbox.run_python(a["code"], wd, exec_id, python=t.get("python_executable") or sys.executable,
                                      timeout=timeout, memory_mb=int(t["exec_memory_mb"]),
                                      allow_network=bool(t["allow_network"]))
+    if ran_file:  # record exactly what ran: the file may be edited afterwards
+        code = a["code"] if len(a["code"]) <= 6000 else a["code"][:6000] + "\n# [... truncated]"
+        return f"executed {ran_file} (exact content at run time):\n```python\n{code}\n```\n" + fmt_exec(r)
     return fmt_exec(r)
 
 

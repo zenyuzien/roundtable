@@ -120,8 +120,6 @@ def test_round_barrier(make):
 
 # 5 ---------------------------------------------------------------------------
 def test_mid_round_message_waits_for_boundary(make):
-    started = asyncio.Event
-
     async def script(system, messages, **k):
         await asyncio.sleep(0.2)
         return f"{who(system)} {round_of(messages)}"

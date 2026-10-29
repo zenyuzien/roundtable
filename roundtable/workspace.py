@@ -15,7 +15,6 @@ other agent before round t+1.
 from __future__ import annotations
 
 import hashlib
-import os
 import shutil
 from pathlib import Path
 
@@ -48,6 +47,10 @@ class ProjectPaths:
 
     def workdir(self, round_number: int, run_id: int) -> Path:
         return self.staging / f"r{round_number}" / f"run{run_id}"
+
+    def history(self, round_number: int, run_id: int) -> Path:
+        """Snapshot of the files a run committed, as they were at that round."""
+        return self.root / "history" / f"r{round_number}" / f"run{run_id}"
 
     def archived(self, round_number: int, run_id: int) -> Path:
         return self.archive / f"r{round_number}" / f"run{run_id}"
@@ -110,6 +113,12 @@ def _changed_files(workdir: Path, base: Path, skip_prefix: str | None = None) ->
     return out
 
 
+def _snapshot(paths: ProjectPaths, round_number: int, run_id: int, rel: str, src: Path) -> None:
+    dst = paths.history(round_number, run_id) / rel
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(src, dst)
+
+
 def commit_files(store: Store, paths: ProjectPaths, project_id: int, round_number: int,
                  runs: list[dict], agent_names: dict[int, str]) -> list[dict]:
     """Apply every succeeded run's file changes to shared/ (deterministic agent order)."""
@@ -138,6 +147,7 @@ def commit_files(store: Store, paths: ProjectPaths, project_id: int, round_numbe
             action = "modified" if dst.exists() else "created"
             dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(f, dst)
+            _snapshot(paths, round_number, run["id"], rel, f)
             log.append(dict(path=rel, action=action, run=run, conflict=0))
         else:
             for run, f in items:
@@ -146,6 +156,7 @@ def commit_files(store: Store, paths: ProjectPaths, project_id: int, round_numbe
                 dst = safe_join(paths.shared, alt)
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(f, dst)
+                _snapshot(paths, round_number, run["id"], alt, f)
                 log.append(dict(path=rel, action=f"conflict_variant:{alt}", run=run, conflict=1))
     for e in log:
         store.ex(
@@ -260,7 +271,7 @@ def _entry_id(store: Store, project_id: int, key: str) -> int:
     return store.ex("INSERT INTO ws_entries(project_id, key, created_at) VALUES (?,?,?)", (project_id, key, now()))
 
 
-def _apply_ops(base: dict | None, ops: list[dict], agent_label: str) -> dict:
+def _apply_ops(base: dict | None, ops: list[dict]) -> dict:
     """Apply one agent's ops on a key sequentially, returning the resulting fields."""
     cur = dict(base) if base else {"kind": "note", "title": "", "content": "", "status": "active"}
     for p in ops:
@@ -306,7 +317,7 @@ def commit_proposals(store: Store, project_id: int, round_number: int, run_ids: 
         conflict = len(agents) > 1 and not all_append
         if conflict:
             for a in agents:
-                res = _apply_ops(base, per_agent[a], agent_names.get(a, ""))
+                res = _apply_ops(base, per_agent[a])
                 _insert_version(store, project_id, eid, head_v + 1, res, a, per_agent[a][-1]["agent_run_id"],
                                 round_number, vis, conflict=1)
             report.append({"key": key, "conflict": True, "agents": agents})
@@ -318,7 +329,7 @@ def commit_proposals(store: Store, project_id: int, round_number: int, run_ids: 
                 if len(agents) > 1:
                     ops = [dict(p, content=f"*[{agent_names.get(a, a)}, round {round_number}]* {p['content'] or ''}")
                            for p in ops]
-                cur = _apply_ops(cur, ops, agent_names.get(a, ""))
+                cur = _apply_ops(cur, ops)
             last = per_agent[agents[-1]][-1]
             _insert_version(store, project_id, eid, head_v + 1, cur, agents[-1] if len(agents) == 1 else None,
                             last["agent_run_id"] if len(agents) == 1 else None, round_number, vis, conflict=0,

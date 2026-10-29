@@ -1,66 +1,43 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react'
-import { api, agentColor } from './api.js'
-import TopBar from './components/TopBar.jsx'
-import Channel from './components/Channel.jsx'
-import Agents from './components/Agents.jsx'
-import Workspace from './components/Workspace.jsx'
-import Files from './components/Files.jsx'
-import Convergence from './components/Convergence.jsx'
-import Settings from './components/Settings.jsx'
-import Activity from './components/Activity.jsx'
-import Inspector from './components/Inspector.jsx'
+import { api } from './api.js'
 import Setup from './components/Setup.jsx'
+import Ground from './components/Ground.jsx'
+import Options from './components/Options.jsx'
+import Inspector from './components/Inspector.jsx'
 import FileViewer from './components/FileViewer.jsx'
 
-function parseView() {
-  const m = window.location.hash.match(/^#\/(.+)/)
-  return m ? m[1] : 'common'
-}
-
-const PANELS = [
-  ['agents', 'Agents'],
-  ['workspace', 'Workspace'],
-  ['files', 'Files & sources'],
-  ['convergence', 'Convergence'],
-  ['settings', 'Settings'],
-  ['activity', 'Activity'],
-]
-
+// Two pages: Setup (when no run is configured) and Activity. Everything else lives under Options.
 export default function App() {
   const [pid, setPid] = useState(null)
-  const [view, setView] = useState(parseView)
+  const [page, setPage] = useState(() => (window.location.hash === '#/options' ? 'options' : 'activity'))
   const [state, setState] = useState(null)
   const [messages, setMessages] = useState([])
   const [meta, setMeta] = useState(null)
   const [inspect, setInspect] = useState(null)
   const [viewFile, setViewFile] = useState(null)
+  const [toast, setToast] = useState(null)
+  const seqRef = useRef(-1)
+
   useEffect(() => {
     const h = (e) => setViewFile(e.detail)
     window.addEventListener('rt:view-file', h)
     return () => window.removeEventListener('rt:view-file', h)
   }, [])
-  const [toast, setToast] = useState(null)
-  const [editSetup, setEditSetup] = useState(false)
-  const seqRef = useRef(-1)
 
   const notify = useCallback((e, kind = 'error') => {
     setToast({ text: e?.message || String(e), kind })
     setTimeout(() => setToast(null), 6000)
   }, [])
-
+  const reloadMeta = useCallback(() => api.get('/api/meta').then(setMeta).catch(notify), [notify])
   const loadProject = useCallback(async () => {
     try { setPid((await api.get('/api/project')).id) } catch (e) { notify(e) }
   }, [notify])
 
+  useEffect(() => { loadProject(); reloadMeta() }, [loadProject, reloadMeta])
   useEffect(() => {
-    loadProject()
-    api.get('/api/meta').then(setMeta).catch(notify)
-  }, [loadProject, notify])
-
-  useEffect(() => {
-    const target = `#/${view}`
+    const target = page === 'options' ? '#/options' : '#/'
     if (window.location.hash !== target) window.history.replaceState(null, '', target)
-  }, [view])
+  }, [page])
 
   const refresh = useCallback(async () => {
     if (!pid) return
@@ -98,71 +75,33 @@ export default function App() {
     } catch (e) { notify(e) }
   }, [refresh, notify])
 
-  const agents = state?.agents || []
-  const started = !!state?.rounds?.some(r => r.status !== 'discarded')
-  const inSetup = !!state && !started && (editSetup || !state.has_task || agents.length === 0)
-  const lastRound = state?.rounds?.filter(r => r.status !== 'discarded').slice(-1)[0]
-  const runStatus = (aid) => lastRound?.runs.filter(r => r.agent_id === aid && !r.superseded).slice(-1)[0]?.status
+  const needsSetup = !!state && !state.rounds.some(r => r.status !== 'discarded') && (!state.has_task || !state.agents.length)
 
   return (
-    <div className="app">
-      <aside className="sidebar">
-        <div className="brand">Roundtable</div>
-        {state && !inSetup && (
+    <div className="app2">
+      <header className="nav">
+        <span className="brand">Roundtable</span>
+        {state && !needsSetup && (
           <>
-            <div className="nav-label">Channels</div>
-            <button className={'nav-item ' + (view === 'common' ? 'active' : '')} onClick={() => setView('common')}>
-              <span className="chan-icon">#</span> Common
-              {state.pending_common > 0 && <span className="badge pending" title="pending interventions">{state.pending_common}</span>}
-            </button>
-            {agents.map((a, i) => (
-              <button key={a.id} style={agentColor(i)}
-                className={'nav-item agent-nav ' + (view === `agent:${a.id}` ? 'active' : '') + (a.enabled ? '' : ' disabled')}
-                onClick={() => setView(`agent:${a.id}`)}>
-                <span className={'dot ' + (runStatus(a.id) || 'idle')} />
-                <span className="agent-name-chip">{a.name}</span>
-                {!a.enabled && <span className="muted small">off</span>}
-                {a.pending_messages > 0 && <span className="badge pending">{a.pending_messages}</span>}
-              </button>
-            ))}
-            {!started && !inSetup && <button className="nav-item" onClick={() => setEditSetup(true)}>✎ Edit setup</button>}
-            <div className="nav-label">Project</div>
-            {PANELS.map(([k, label]) => (
-              <button key={k} className={'nav-item ' + (view === k ? 'active' : '')} onClick={() => setView(k)}>{label}</button>
-            ))}
+            <button className={'nav-tab ' + (page === 'activity' ? 'on' : '')} onClick={() => setPage('activity')}>Activity</button>
+            <span className="spacer" />
+            <button className={'nav-tab ' + (page === 'options' ? 'on' : '')} onClick={() => setPage('options')}>Options</button>
           </>
         )}
-        <div className="sidebar-foot muted small">
-          {meta && <span title={meta.sandbox.note}>sandbox: {meta.sandbox.mode}</span>}
-        </div>
-      </aside>
-
-      <main className="main">
+      </header>
+      <main className="page">
         {!state && <div className="empty">Loading...</div>}
-        {state && inSetup && (
-          <div className="content"><Setup pid={pid} meta={meta} state={{ ...state, task: messages.find(m => m.kind === 'task')?.content }}
-            notify={notify} onDone={() => { setEditSetup(false); setView('common'); refresh() }} /></div>
+        {state && needsSetup && meta && (
+          <Setup pid={pid} meta={meta} reloadMeta={reloadMeta} notify={notify} onDone={() => { setPage('activity'); refresh() }} />
         )}
-        {state && !inSetup && (
-          <>
-            <TopBar state={state} act={act} pid={pid} />
-            <div className="content">
-              {(view === 'common' || view.startsWith('agent:')) && (
-                <Channel key={view} channel={view} state={state} messages={messages} pid={pid} act={act}
-                  onInspect={setInspect} />
-              )}
-              {view === 'agents' && <Agents state={state} meta={meta} pid={pid} act={act} />}
-              {view === 'workspace' && <Workspace pid={pid} seq={state.project.seq} meta={meta} act={act} notify={notify} />}
-              {view === 'files' && <Files pid={pid} seq={state.project.seq} state={state} notify={notify} />}
-              {view === 'convergence' && <Convergence pid={pid} seq={state.project.seq} state={state} notify={notify} />}
-              {view === 'settings' && <Settings state={state} meta={meta} pid={pid} act={act} notify={notify}
-                onDeleted={() => { setState(null); setView('common'); loadProject() }} reloadMeta={() => api.get('/api/meta').then(setMeta)} />}
-              {view === 'activity' && <Activity pid={pid} seq={state.project.seq} state={state} notify={notify} />}
-            </div>
-          </>
+        {state && !needsSetup && page === 'activity' && (
+          <Ground state={state} messages={messages} pid={pid} act={act} onInspect={setInspect} />
+        )}
+        {state && !needsSetup && page === 'options' && (
+          <Options state={state} messages={messages} meta={meta} pid={pid} act={act} notify={notify} reloadMeta={reloadMeta}
+            onInspect={setInspect} onDeleted={() => { setState(null); setPage('activity'); loadProject() }} />
         )}
       </main>
-
       {inspect && <Inspector runId={inspect} state={state} onClose={() => setInspect(null)} notify={notify} />}
       {viewFile && <FileViewer file={viewFile} onClose={() => setViewFile(null)} />}
       {toast && <div className={'toast ' + toast.kind} onClick={() => setToast(null)}>{toast.text}</div>}

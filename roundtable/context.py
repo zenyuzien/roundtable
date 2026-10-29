@@ -33,8 +33,17 @@ Set support_termination to true only if you believe further rounds would not mat
 
 
 def protocol_preamble(agent_name: str, member_names: list[str], tool_groups: set[str], convergence: bool,
-                      memory: bool) -> str:
+                      memory: bool, reviewer_names: list[str] | None = None, is_reviewer: bool = False) -> str:
     others = [n for n in member_names if n != agent_name]
+    reviewer_names = reviewer_names or []
+    if is_reviewer:
+        timing = ("- You work in the second phase of each round: the other agents first respond independently, then you "
+                  "receive their contributions from this round (shown below) and review them.\n"
+                  "- Everyone sees your review at the start of the next round.")
+    else:
+        timing = ("- You cannot see other agents' outputs from the current round; you will see them next round."
+                  + (f"\n- {', '.join(reviewer_names)} reviews each round after the others have responded; you see that "
+                     "review (and any questions to you) at the start of the next round." if reviewer_names else ""))
     tools = []
     if "workspace" in tool_groups:
         tools.append("- workspace_read / workspace_propose: the shared structured research workspace "
@@ -60,7 +69,7 @@ research task in synchronized rounds{f" (the others: {', '.join(others)})" if ot
 
 How rounds work:
 - In each round every agent receives the same frozen snapshot of the shared state and responds independently.
-- You cannot see other agents' outputs from the current round; you will see them next round.
+{timing}
 - Workspace proposals and files you write are staged and become visible to everyone in the next round.
 - The user may intervene between rounds through the common channel or your private channel.
 
@@ -74,6 +83,8 @@ Standards:
 - Your response is what the other agents and the user read: put the substance of your contribution in the
   response itself. Use files for long artifacts (code, data, long derivations) and summarize their content.
 - If another agent or the user asked you a question, answer it directly.
+- Report only numbers your tool runs actually printed. If a run failed, say so; never describe results of code
+  that did not run successfully. Other agents and reviewers see your recorded tool output.
 - Write in Markdown. Use LaTeX for mathematics: $...$ inline and $$...$$ for display equations.
 
 Tools available to you:
@@ -90,7 +101,8 @@ def _clip(text: str, limit: int, hint: str) -> tuple[str, bool]:
 
 def build_context(store: Store, paths: ProjectPaths, project_id: int, round_number: int, agent: dict,
                   instructions: str, member_ids: list[int], names: dict[int, str], settings: dict,
-                  tool_groups: set[str], synthesis: bool = False, synthesis_reason: str = "") -> dict:
+                  tool_groups: set[str], synthesis: bool = False, synthesis_reason: str = "",
+                  current_round: list[dict] | None = None, reviewer_ids: list[int] | None = None) -> dict:
     t = round_number
     cs = settings["context"]
     budget = int(cs["max_context_tokens"]) * CHARS_PER_TOKEN
@@ -101,7 +113,10 @@ def build_context(store: Store, paths: ProjectPaths, project_id: int, round_numb
                                                                          or decider not in member_ids)
     member_names = [names[m] for m in member_ids]
 
-    system = protocol_preamble(agent["name"], member_names, tool_groups, conv, bool(agent["memory_enabled"])) \
+    reviewer_ids = [r for r in (reviewer_ids or []) if r in member_ids]
+    system = protocol_preamble(agent["name"], member_names, tool_groups, conv, bool(agent["memory_enabled"]),
+                               reviewer_names=[names[r] for r in reviewer_ids if r != agent["id"]],
+                               is_reviewer=current_round is not None) \
         + "\n\n" + (instructions.strip() or "(no instructions provided)")
 
     msgs = store.q(
@@ -134,6 +149,9 @@ def build_context(store: Store, paths: ProjectPaths, project_id: int, round_numb
             "what was agreed or conceded; list the cruxes that remain unresolved and what evidence or argument would "
             "resolve each; separate claims backed by retrieved sources or checked computations from claims that were "
             "only asserted; and do not declare a winner unless the evidence clearly supports one.")
+    elif current_round is not None:
+        sections["closing"] = (f"## Round {t} review\nReview the round-{t} contributions above according to your "
+                               "instructions. Refer only to what the agents actually wrote.")
     else:
         sections["closing"] = (f"## Round {t}\nProduce your round-{t} contribution according to your instructions, "
                                f"taking into account everything above" + (" (items marked NEW arrived since the "
@@ -159,6 +177,20 @@ def build_context(store: Store, paths: ProjectPaths, project_id: int, round_numb
     def mark(m):
         return "NEW " if m["visible_from_round"] == t and t > 1 else ""
 
+    # 0. review phase: this round's phase-1 contributions (highest priority)
+    if current_round is not None:
+        parts = [f"## This round's contributions (round {t}) - for your review"]
+        for c in current_round:
+            body, _ = _clip(c["content"], per_output, f"read the full text after the round with read_round round={t}")
+            block = f"### {c['name']} - round {t}\n{body}"
+            block += format_evidence(c.get("tool_calls") or [], per_result=3000)
+            for path, text in c.get("files", []):
+                block += f"\n\n**File written this round: `{path}` (file content - source, not program output)**\n```\n{text}\n```"
+            parts.append(block)
+        if not current_round:
+            parts.append("(no successful contributions this round)")
+        take("this_round", "\n\n".join(parts), "the rest is available after the round via read_round")
+
     # 1. private channel (newest first priority, displayed chronologically)
     if private:
         recent = private[-int(cs["private_history_messages"]):]
@@ -180,7 +212,7 @@ def build_context(store: Store, paths: ProjectPaths, project_id: int, round_numb
     recent_rounds = [r for r in prev_rounds if r >= t - k]
     older_rounds = [r for r in prev_rounds if r < t - k]
     tool_rows = store.q(
-        "SELECT id, agent_id, round_number, tool, args, status, private FROM tool_calls WHERE project_id = ? "
+        "SELECT id, agent_id, round_number, tool, args, status, private, result FROM tool_calls WHERE project_id = ? "
         "AND round_number < ? ORDER BY id", (project_id, t))
     round_blocks: dict[int, str] = {}
     for r in sorted(recent_rounds, reverse=True):
@@ -189,11 +221,7 @@ def build_context(store: Store, paths: ProjectPaths, project_id: int, round_numb
             body, _ = _clip(m["content"], per_output, f"read_round round={r} for the full output")
             calls = [c for c in tool_rows if c["round_number"] == r and c["agent_id"] == m["agent_id"]
                      and (not c["private"] or c["agent_id"] == aid)]
-            calls_txt = ""
-            if calls:
-                calls_txt = "\n_Tool calls:_ " + "; ".join(
-                    f"#{c['id']} {c['tool']}({c['args'][:100]}){'' if c['status'] == 'ok' else ' [' + c['status'] + ']'}"
-                    for c in calls[:25])
+            calls_txt = format_evidence(calls)
             who = names.get(m["agent_id"], f"agent {m['agent_id']}") + (" (you)" if m["agent_id"] == aid else "")
             parts.append(f"### Output of {who} - round {r}\n{body}{calls_txt}")
         block = "\n\n".join(parts)
@@ -250,7 +278,7 @@ def build_context(store: Store, paths: ProjectPaths, project_id: int, round_numb
         take("older", "## Earlier rounds (summaries; exact text available via read_round)\n" + "\n\n".join(lines))
 
     order = ["header", "task", "older"] + [f"round_{r}" for r in sorted(round_blocks)] + \
-        ["common_user", "private", "memory", "workspace", "files", "sources", "closing"]
+        ["common_user", "private", "memory", "workspace", "files", "sources", "this_round", "closing"]
     for r, b in round_blocks.items():
         sections[f"round_{r}"] = b
     user = "\n\n".join(sections[n] for n in order if n in sections)
@@ -265,6 +293,50 @@ def build_context(store: Store, paths: ProjectPaths, project_id: int, round_numb
             "workspace_versions": {e["key"]: e["version"] for e in entries},
         },
     }
+
+
+EVIDENCE_TOOLS = ("run_python", "run_bash")
+
+
+def _split_executed(body: str) -> tuple[str, str]:
+    """Separate the recorded script ("executed X ... ```python ...```") from the program output."""
+    if body.startswith("executed ") and "```\n" in body:
+        head, rest = body.split("```python\n", 1) if "```python\n" in body else ("", body)
+        code, _, out = rest.partition("\n```\n")
+        return head.splitlines()[0] + "\n" + code, out
+    return "", body
+
+
+def _clip_mid(s: str, limit: int) -> str:
+    return s if len(s) <= limit else s[:limit // 2] + "\n[... middle omitted ...]\n" + s[-limit // 2:]
+
+
+def format_evidence(calls: list[dict], per_result: int = 1500, max_calls: int = 25) -> str:
+    """Tool calls of one agent's turn; code-execution results are included verbatim (truncated) as evidence."""
+    if not calls:
+        return ""
+    lines = []
+    for c in calls[:max_calls]:
+        res = c.get("result") or ""
+        failed = c["status"] != "ok" or "Traceback" in res or res.startswith(("ERROR", "REFUSED")) or \
+            ("exit_code: " in res and "exit_code: 0" not in res)
+        head = f"#{c['id']} {c['tool']}({c['args'][:100]})" + (" -> FAILED" if failed else "")
+        if c["tool"] in EVIDENCE_TOOLS:
+            body = res.split("\n", 1)[1] if res.startswith("[tool call #") else res
+            code, out = _split_executed(body)
+            # program output has priority over the script text: it is the evidence
+            out_budget = max(per_result, int(per_result * 2.5) - min(len(code), per_result // 2))
+            block = f"- {head}\n"
+            if code:
+                first, _, src = code.partition("\n")
+                src = src if len(src) <= per_result // 2 else src[:per_result // 2] + "\n# [... script truncated]"
+                block += f"  {first}\n```python\n{src}\n```\n"
+            block += f"  program output:\n```\n{_clip_mid(out.strip(), out_budget)}\n```"
+            lines.append(block)
+        else:
+            lines.append(f"- {head}")
+    more = f"\n- ... {len(calls) - max_calls} more calls" if len(calls) > max_calls else ""
+    return "\n_Tool calls (code-execution output is recorded evidence):_\n" + "\n".join(lines) + more
 
 
 def member_order(m: dict, member_ids: list[int]) -> int:

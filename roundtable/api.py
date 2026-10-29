@@ -1,7 +1,6 @@
 """HTTP API (FastAPI). All routes are async so database access stays on the event loop."""
 from __future__ import annotations
 
-import json
 import shutil
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -11,14 +10,16 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import service
-from .config import DATA_DIR, DEFAULT_SETTINGS, PROVIDER_ENV, ROOT, TOOL_NAMES, Pricing, Secrets, normalize_settings, redact
+from .config import DATA_DIR, DEFAULT_SETTINGS, PROVIDER_ENV, ROOT, TOOL_NAMES, Pricing, Secrets, normalize_settings
 from .db import Store, jload
 from .engine import Engine, EngineError
 from .providers import PROVIDER_INFO, build_providers
 from .tools.sandbox import Sandbox
 from .workspace import WS_KINDS, ProjectPaths, list_tree, safe_join, snapshot_entries, staged_changes
 
-DEFAULT_MODEL = "gemini-3.5-flash-lite"
+DEFAULT_MODELS = {"google": "gemini-3.5-flash-lite", "anthropic": "claude-haiku-5-5", "openai": "gpt-5-mini",
+                  "mock": "mock"}
+DEFAULT_MODEL = DEFAULT_MODELS["google"]
 MAX_UPLOAD = 100 * 1024 * 1024
 
 
@@ -74,7 +75,7 @@ def create_app(data_dir: Path = DATA_DIR, providers=None, serve_frontend: bool =
 
     @app.get("/api/meta")
     async def meta(request: Request):
-        return {"providers": PROVIDER_INFO, "tools": TOOL_NAMES, "workspace_kinds": WS_KINDS,
+        return {"providers": PROVIDER_INFO, "default_models": DEFAULT_MODELS, "tools": TOOL_NAMES, "workspace_kinds": WS_KINDS,
                 "default_settings": DEFAULT_SETTINGS, "sandbox": E(request).sandbox.describe(),
                 "secrets": secrets.status()}
 
@@ -100,19 +101,6 @@ def create_app(data_dir: Path = DATA_DIR, providers=None, serve_frontend: bool =
             if "generateContent" in m.get("supportedGenerationMethods", []) and not any(k in name for k in skip):
                 out.append({"id": name, "label": m.get("displayName", name), "input_limit": m.get("inputTokenLimit")})
         return out
-
-    @app.post("/api/models/check")
-    async def check_model(request: Request, body: dict):
-        """One tiny request to see whether a model is usable with the configured key right now."""
-        provider = E(request).providers.get(body.get("provider", "google"))
-        if provider is None:
-            raise HTTPException(400, "unknown provider")
-        try:
-            await provider.complete(model=body.get("model", ""), system="Reply with OK.",
-                                    messages=[{"role": "user", "content": "ping"}], tools=[], max_tokens=64)
-            return {"ok": True}
-        except Exception as e:
-            return {"ok": False, "error": redact(str(e), secrets)[:400]}
 
     @app.get("/api/secrets")
     async def get_secrets():
@@ -143,15 +131,6 @@ def create_app(data_dir: Path = DATA_DIR, providers=None, serve_frontend: bool =
 
     # ------------------------------------------------------------ projects
 
-    @app.get("/api/projects")
-    async def list_projects(request: Request):
-        return S(request).q("SELECT id, name, created_at, state, state_reason FROM projects ORDER BY id DESC")
-
-    @app.post("/api/projects")
-    async def new_project(request: Request, body: dict):
-        pid = service.create_project(S(request), body.get("name", ""), body.get("settings"))
-        return {"id": pid}
-
     @app.get("/api/project")
     async def the_project(request: Request):
         """The app works on a single project: return it, creating it on first use."""
@@ -175,15 +154,19 @@ def create_app(data_dir: Path = DATA_DIR, providers=None, serve_frontend: bool =
             store.ex("DELETE FROM agents WHERE project_id = ?", (pid,))
             settings = dict(body.get("settings") or {})
             settings.setdefault("synthesis_agent", None)
+            settings["review_agents"] = []
             settings.setdefault("convergence", {}).setdefault("decider_agent", None)
             for i, a in enumerate(agents):
                 aid = service.add_agent(store, pid, a.get("name") or f"Agent {i + 1}", a.get("instructions", ""),
-                                        provider=a.get("provider", "google"), model=a.get("model") or DEFAULT_MODEL,
-                                        tools=a.get("tools"), max_tokens=int(a.get("max_tokens", 8192)))
+                                        provider=a.get("provider", "google"),
+                                        model=a.get("model") or DEFAULT_MODELS.get(a.get("provider", "google"), DEFAULT_MODEL),
+                                        tools=a.get("tools"), max_tokens=int(a.get("max_tokens", 16384)))
                 if a.get("decider"):
                     settings["convergence"]["decider_agent"] = aid
                 if a.get("synthesis"):
                     settings["synthesis_agent"] = aid
+                if a.get("review"):
+                    settings["review_agents"].append(aid)
             service.set_task(store, pid, body["task"])
             service.update_settings(store, pid, settings)
         return {"ok": True}
@@ -275,9 +258,11 @@ def create_app(data_dir: Path = DATA_DIR, providers=None, serve_frontend: bool =
         if not run:
             raise HTTPException(404, "no such run")
         paths = ProjectPaths(data_dir, run["project_id"])
+        hist = paths.history(run["round_number"], rid)
         base = {"staged": paths.workdir(run["round_number"], rid),
                 "archived": paths.archived(run["round_number"], rid),
-                "committed": paths.shared}.get(where)
+                # the file as this run committed it; runs from before snapshots existed fall back to the live tree
+                "committed": hist if (hist / path).is_file() else paths.shared}.get(where)
         if base is None:
             raise HTTPException(400, "where must be staged, archived or committed")
         try:
@@ -392,6 +377,14 @@ def create_app(data_dir: Path = DATA_DIR, providers=None, serve_frontend: bool =
                          for rd in sorted(paths.archive.glob("r*")) for d in sorted(rd.glob("run*"))],
         }
 
+    @app.get("/api/files/{fid}/raw")
+    async def upload_raw(request: Request, fid: int):
+        """A file the user attached to a message (served from the upload store)."""
+        f = S(request).one("SELECT * FROM files WHERE id = ?", (fid,))
+        if not f or not f["stored_path"] or not Path(f["stored_path"]).is_file():
+            raise HTTPException(404, "no such file")
+        return FileResponse(f["stored_path"], filename=f["filename"])
+
     @app.get("/api/projects/{pid}/files/raw")
     async def file_raw(request: Request, pid: int, path: str, scope: str = "shared"):
         paths = ProjectPaths(data_dir, pid)
@@ -469,10 +462,6 @@ def create_app(data_dir: Path = DATA_DIR, providers=None, serve_frontend: bool =
                       "a.project_id = ? AND r.superseded = 0 ORDER BY a.round_number, r.position", (pid,))
         return {"decisions": [dict(d, decision=jload(d["decision"])) for d in dec],
                 "assessments": [dict(a, assessment=jload(a["assessment"])) for a in ass]}
-
-    @app.get("/api/projects/{pid}/summaries")
-    async def summaries(request: Request, pid: int):
-        return S(request).q("SELECT * FROM round_summaries WHERE project_id = ? ORDER BY round_number", (pid,))
 
     @app.get("/api/projects/{pid}/events")
     async def events(request: Request, pid: int, limit: int = 200):

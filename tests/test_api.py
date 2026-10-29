@@ -76,7 +76,7 @@ def test_secrets_never_returned(tmp_path):
         r = c.put("/api/secrets", json={"provider": "google", "key": key + "-g"})
         assert r.status_code == 200 and key not in r.text and r.json()["google"]["configured"]
         assert c.put("/api/secrets", json={"provider": "nope", "key": "x"}).status_code == 400
-        pid = c.post("/api/projects", json={"name": "p"}).json()["id"]
+        pid = c.get("/api/project").json()["id"]
         c.post(f"/api/projects/{pid}/agents", json={"name": "x", "provider": "openai", "model": "gpt-x"})
         c.put(f"/api/projects/{pid}/task", json={"content": "t"})
         # point the provider at a closed port so the call fails fast; error text must not contain the key
@@ -100,13 +100,14 @@ def test_setup_with_judge(tmp_path):
             "agents": [{"name": "Pro", "provider": "mock", "model": "mock"},
                        {"name": "Con", "provider": "mock", "model": "mock"},
                        {"name": "Judge", "provider": "mock", "model": "mock", "tools": [], "decider": True,
-                        "synthesis": True}]})
+                        "synthesis": True, "review": True}]})
         assert r.status_code == 200, r.text
         s = c.get(f"/api/projects/{pid}/state").json()
         judge = [a for a in s["agents"] if a["name"] == "Judge"][0]
         assert judge["tools"] == []
         assert s["project"]["settings"]["synthesis_agent"] == judge["id"]
         assert s["project"]["settings"]["convergence"]["decider_agent"] == judge["id"]
+        assert s["project"]["settings"]["review_agents"] == [judge["id"]]
         c.post(f"/api/projects/{pid}/control/start")
         s = wait_idle(c, pid)
         kinds = [r["kind"] for r in s["rounds"]]

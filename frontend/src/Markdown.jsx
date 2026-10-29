@@ -7,7 +7,7 @@ import 'katex/dist/katex.min.css'
 
 // LLMs emit \[...\], \(...\) and inline $$...$$; normalise to what remark-math expects,
 // leaving code spans and fenced blocks untouched.
-export function normalizeMath(src) {
+function normalizeMath(src) {
   if (!src) return ''
   const parts = src.split(/(```[\s\S]*?```|`[^`\n]*`)/g)
   return parts

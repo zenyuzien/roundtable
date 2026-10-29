@@ -28,6 +28,9 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "max_rounds": 5,
     # agent id that writes one final synthesis turn when the run ends (converged / max rounds); None = off
     "synthesis_agent": None,
+    # agents that run in a second phase of every round, after the barrier, reviewing that round's contributions
+    # (e.g. a neutral judge); everyone sees their review from the next round
+    "review_agents": [],
     "breakpoints": [],
     # halt: stop and ask the user. retry_then_halt: auto-retry failed agents
     # `auto_retries` times, then halt. skip_failed: complete the round without
@@ -89,6 +92,7 @@ def normalize_settings(s: dict) -> dict:
     s["auto_retries"] = max(0, min(int(s["auto_retries"]), 5))
     s["max_concurrency"] = max(1, int(s["max_concurrency"]))
     s["max_tool_iterations"] = max(0, min(int(s["max_tool_iterations"]), 50))
+    s["review_agents"] = [int(a) for a in s.get("review_agents") or []]
     return s
 
 

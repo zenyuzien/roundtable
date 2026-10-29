@@ -96,6 +96,10 @@ export default function Settings({ state, meta, pid, act, notify, onDeleted, rel
               <option value="">all agents (policy above)</option>
               {state.agents.map(a => <option key={a.id} value={a.id}>{a.name} only</option>)}
             </select></label>
+          <label title="These agents run in a second phase of every round, after the others, and review that round's contributions">Review phase (after the others)
+            <select multiple value={(s.review_agents || []).map(String)} onChange={e => setS({ ...s, review_agents: [...e.target.selectedOptions].map(o => Number(o.value)) })}>
+              {state.agents.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+            </select></label>
           <label title="When the run ends (converged or max rounds), this agent writes one final synthesis turn that sees every round">Final synthesis by
             <select value={s.synthesis_agent ?? ''} onChange={e => setS({ ...s, synthesis_agent: e.target.value ? Number(e.target.value) : null })}>
               <option value="">nobody (off)</option>

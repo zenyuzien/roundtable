@@ -19,8 +19,7 @@ The app works on a single project and opens in a three-step setup: **1. task**, 
 model**, **3. one instruction page per agent**. Then **Start round 1**. Before round 1 you can still change
 everything ("Edit setup" in the sidebar). After that, use the channels to intervene, or Settings → **Start over** for a new task.
 
-The model dropdown in setup lists the models your Google AI Studio key can use, and **Test model** checks one with a
-tiny request. On the free tier each model has its own small daily request quota (for example 20/day). If one model
+The model dropdown in setup lists the models your Google AI Studio key can use. On the free tier each model has its own small daily request quota (for example 20/day). If one model
 reports "daily free-tier quota exhausted", switch the agents to another model or enable billing.
 
 Requirements: Python ≥ 3.10. Node ≥ 18 is needed only if `frontend/dist` is missing (it ships prebuilt).
@@ -93,28 +92,27 @@ Only after that can round *t+1* freeze. Guarantees that follow from this design 
 
 ## Using the GUI
 
-* **Common channel**: the task (round 0), your messages, and every agent output grouped by round. Toggle
-  **Timeline** / **Side by side** (rounds × agents grid). Each card shows status, tokens, cost and duration,
-  a compact convergence self-assessment, and **inspect**.
-* **Agent channels**: a private conversation with a single agent. Files attached here go to that agent's `private/` area only.
-* **Inspect** (on any output) shows:
-  * the exact system prompt and user context that agent received, with a per-section truncation report and snapshot ids;
-  * every tool call with arguments and full results;
-  * the tool-use transcript, the parsed assessment, and the pinned config.
-* **Top bar**:
-  * Start / Resume, Step 1 round, Pause after round, Stop, plus the recovery actions;
-  * current round, running / done / failed counts, pending interventions, tokens and cost against budget;
-  * quick edits for max rounds, breakpoints and the convergence toggle.
-* **Agents**: add, remove, rename, reorder, enable/disable; provider, model, temperature, max tokens, tools and memory;
-  an instruction editor with version history.
-* **Workspace**: research questions, hypotheses, derivations, literature notes, experiment proposals, citations,
-  code, results, open questions, rejected hypotheses and notes. Every version records its provenance (agent, round,
-  time). Conflicting concurrent edits show all variants, which you or an agent can resolve. Your edits are delivered at the next boundary.
-* **Files & sources**: the shared tree, private files, the change log (conflicts highlighted), uploads with their
-  delivery status, and every paper or page actually retrieved by a tool.
-* **Convergence**: each criterion with pass/fail and its evidence, per round, plus per-agent assessments.
-* **Settings**: execution, budget, context, convergence, tools and sandbox, API keys, pricing, export and delete.
-* Markdown and KaTeX: `$…$`, `$$…$$`, `\(…\)` and `\[…\]` are supported, including multi-line display equations.
+There are two pages, plus Options:
+
+* **Setup** (shown when no run exists) asks for:
+  * the **goal**;
+  * the **API key**: it uses the one you have, asks which one if there are several, and lets you add one if there are none;
+  * **how many agents**, with one role prompt each (optionally **+ Add a neutral judge**);
+  * the **maximum number of rounds**.
+
+  Then **Start**.
+* **Activity** has two kinds of tab:
+  * **Common ground**: everything every agent sees. That is the goal, each round's outputs, and the **full content of every
+    file the agents wrote**, inline and as it was at that round (Markdown and LaTeX rendered, code and data as text,
+    images inline). Anything you add here (text and/or files) is seen by all agents from the next round.
+  * **One tab per agent**: that agent's own turns, plus a private ground. Anything you add there is seen only by that agent, from
+    the next round.
+
+  The header has Start / Continue, Pause after this round, Stop, recovery actions if an agent fails, and **New run**.
+  Each run is fresh: New run deletes the previous one.
+* **Options** holds everything else: agents and models, settings and keys, workspace, files and sources, convergence, a
+  detailed timeline (side-by-side grid), and the event log. Each agent turn also has a **details** link to the exact
+  context, tool calls and transcript.
 
 ## Context management (`roundtable/context.py`)
 

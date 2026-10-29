@@ -10,7 +10,7 @@ import uuid
 
 import httpx
 
-from .base import LLMResponse, Provider, ProviderError, RETRYABLE_STATUS, ToolCall, ToolSpec, parse_retry_after
+from .base import LLMResponse, Provider, ProviderError, RETRYABLE_STATUS, ToolCall, parse_retry_after
 
 
 def _schema(params: dict) -> dict | None:

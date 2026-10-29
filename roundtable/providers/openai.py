@@ -5,7 +5,7 @@ import os
 
 import httpx
 
-from .base import LLMResponse, Provider, ProviderError, RETRYABLE_STATUS, ToolCall, ToolSpec, parse_retry_after
+from .base import LLMResponse, Provider, ProviderError, RETRYABLE_STATUS, ToolCall, parse_retry_after
 
 
 class OpenAIProvider(Provider):
